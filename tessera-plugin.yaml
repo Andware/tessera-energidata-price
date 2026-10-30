@@ -1,0 +1,89 @@
+# Elpris (Energi Data Service): the price of power now as a tile, and the graph of today and tomorrow on bigger tiles and
+# on a card, in DKK per kWh (kr or øre). It reads the sensor of the Energi Data Service integration (HACS
+# `energidataservice` by MTrab) from Home Assistant: its quarter or hour prices in `raw_today` and `raw_tomorrow`, with
+# the tariffs and taxes the integration already adds. The price now of a tile can also stand in the top bar.
+# Built on the Electricity price plugin by Heronimonimo (MIT).
+id: energidata_price
+version: 0.4.0
+api: "0.12"
+icon: flash
+maintainer: Andware
+license: MIT
+stage: beta
+topics: [energy]
+requires:
+  esphome: 2026.6.2
+boards: any
+flash_kb: 16
+
+# The price now of a tile on the screen, with that tile's sensor, formula and unit.
+bar_items:
+  - { id: price, label: bar_price, icon: flash, example: bar_example }
+
+tiles:
+  # has_attributes keeps the inspector's list to Energi Data Service sensors: raw_today holds { hour, price } per slot,
+  # today_mean is the integration's own.
+  - id: energidataservice
+    name: tile_name
+    icon: flash
+    sizes: { min: 1x1, max: 9x9, full: true }
+    memory: 16000
+    domains: [sensor]
+    attributes: [unit_of_measurement]
+    has_attributes: [raw_today, today_mean]
+    fields:
+      today: { path: "raw_today[*].price", as: numbers }
+      tomorrow: { path: "raw_tomorrow[*].price", as: numbers }
+    example: tile_example
+    preview: { title: "{name}", value: "{state} {unit_of_measurement}" }
+    options:
+      - id: unit
+        kind: choice
+        default: kr
+        label: unit
+        hint: unit_hint
+        choices:
+          - { value: kr, label: unit_kr }
+          - { value: ore, label: unit_ore }
+      - id: span
+        kind: choice
+        default: two_days
+        label: span
+        hint: span_hint
+        choices:
+          - { value: two_days, label: span_two_days }
+          - { value: today, label: span_today }
+          - { value: next24, label: span_next24 }
+          - { value: next48, label: span_next48 }
+      - id: resolution
+        kind: choice
+        default: quarter
+        label: resolution
+        hint: resolution_hint
+        choices:
+          - { value: quarter, label: resolution_quarter }
+          - { value: hour, label: resolution_hour }
+      - { id: fixed, kind: number, min: 0, max: 4, step: 1, default: 2, label: decimals, hint: decimals_hint }
+      - { id: delivery, kind: text, default: "", label: delivery, hint: delivery_hint }
+      - { id: feed_in, kind: text, default: "", label: feed_in, hint: feed_in_hint }
+      - id: graph
+        kind: choice
+        default: bars
+        label: graph
+        hint: graph_hint
+        choices:
+          - { value: bars, label: graph_bars }
+          - { value: line, label: graph_line }
+      - { id: fill, kind: toggle, default: true, label: fill, hint: fill_hint }
+      - id: grid
+        kind: choice
+        default: none
+        label: grid
+        hint: grid_hint
+        choices:
+          - { value: none, label: grid_none }
+          - { value: solid, label: grid_solid }
+          - { value: dotted, label: grid_dotted }
+
+cards:
+  - { id: prices, name: card_name, wide: true }
