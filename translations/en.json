@@ -13,7 +13,8 @@
     "average": "Average",
     "no_graph": "No prices for today",
     "feed_in": "Feed-in {value}",
-    "formula_error": "Check the formula"
+    "formula_error": "Check the formula",
+    "cheap": "Cheapest {value}"
   },
   "app": {
     "name": "Elpris (Energi Data Service)",
@@ -26,7 +27,7 @@
     "unit_kr": "kr/kWh",
     "unit_ore": "øre/kWh",
     "span": "Period",
-    "span_hint": "Whole days: today and tomorrow (48 hours) once tomorrow's prices are in, or today alone. Or only the hours to come, from the hour of now: the next 24, or the next 48 as far as the prices go (they reach midnight tomorrow, and tomorrow's come in the early afternoon).",
+    "span_hint": "Whole days: today and tomorrow (48 hours) once tomorrow's prices are in, or today alone. Or only the hours to come, from the hour of now: the next 24 or 48. Past the known prices the graph shows Carnot's forecast in fainter bars, when the forecast is on in Energi Data Service.",
     "span_two_days": "Today + tomorrow (48 h)",
     "span_today": "Today only (24 h)",
     "span_next24": "Next 24 hours",
@@ -35,6 +36,12 @@
     "resolution_hint": "Every quarter of an hour as the sensor has it, or each hour as the average of its four quarters. The price now, the low, high and graph follow it.",
     "resolution_quarter": "Quarter",
     "resolution_hour": "Hour (average)",
+    "cheap": "Cheapest hours",
+    "cheap_hint": "Mark this many of the cheapest hours to come in the graph, from the hour of now on, of the known prices (not the forecast). 0: none.",
+    "cheap_mode": "Cheapest hours as",
+    "cheap_mode_hint": "Each on its own (the cheapest hours wherever they are), or in a row (the cheapest stretch, for a dishwasher or a car).",
+    "cheap_single": "Single hours",
+    "cheap_block": "Hours in a row",
     "decimals": "Decimals",
     "decimals_hint": "How many decimals the price shows. In øre none or one is enough.",
     "feed_in": "Feed-in price",

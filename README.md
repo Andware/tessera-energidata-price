@@ -45,6 +45,13 @@ shows øre. A formula with a typo shows "Check the formula" on the screen in pla
   lowest and highest price.
 - Tomorrow's bars appear as soon as the sensor has them (Energi Data Service gets them in the early afternoon).
 - The price of now is the slot of now in today's list, not the sensor's state.
+- **Cheapest hours** marks the cheapest hours to come (up to 6) with a dark stroke over their bars: each on its own,
+  or as the cheapest stretch in a row (**Cheapest hours as**), handy for a dishwasher or a car. The card names them in
+  its day row. Only known prices count, not the forecast.
+- **Period** can show the next 24 or 48 hours from now in place of whole days. The known prices end at midnight
+  tomorrow (tomorrow's come in the early afternoon); after them the graph shows Carnot's forecast in fainter bars, when
+  the forecast is on in Energi Data Service (its options, with a free Carnot account). The card's low and high come
+  from the known prices only.
 - On the days the clock changes, the graph has 23 or 25 hours, each where it is on the clock.
 - **Electricity price** can also stand in a page's top bar (editor, "From plugins"): the price now of your first price
   tile.

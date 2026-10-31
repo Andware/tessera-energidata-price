@@ -4,7 +4,7 @@
 # the tariffs and taxes the integration already adds. The price now of a tile can also stand in the top bar.
 # Built on the Electricity price plugin by Heronimonimo (MIT).
 id: energidata_price
-version: 0.4.0
+version: 0.6.0
 api: "0.12"
 icon: flash
 maintainer: Andware
@@ -34,6 +34,9 @@ tiles:
     fields:
       today: { path: "raw_today[*].price", as: numbers }
       tomorrow: { path: "raw_tomorrow[*].price", as: numbers }
+      # Carnot's forecast (with forecast on in the integration): an hour each, from where the known prices end.
+      outlook: { path: "forecast[*].price", as: numbers }
+      outlook_start: { path: "forecast[0].hour", as: epoch }
     example: tile_example
     preview: { title: "{name}", value: "{state} {unit_of_measurement}" }
     options:
@@ -63,6 +66,15 @@ tiles:
         choices:
           - { value: quarter, label: resolution_quarter }
           - { value: hour, label: resolution_hour }
+      - { id: cheap, kind: number, min: 0, max: 6, step: 1, default: 0, label: cheap, hint: cheap_hint }
+      - id: cheap_mode
+        kind: choice
+        default: single
+        label: cheap_mode
+        hint: cheap_mode_hint
+        choices:
+          - { value: single, label: cheap_single }
+          - { value: block, label: cheap_block }
       - { id: fixed, kind: number, min: 0, max: 4, step: 1, default: 2, label: decimals, hint: decimals_hint }
       - { id: delivery, kind: text, default: "", label: delivery, hint: delivery_hint }
       - { id: feed_in, kind: text, default: "", label: feed_in, hint: feed_in_hint }

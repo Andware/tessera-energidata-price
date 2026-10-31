@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.0
+
+- New options **Cheapest hours** (0 to 6) and **Cheapest hours as**: the graph marks the cheapest hours to come with
+  a dark stroke over their bars, each on its own or as the cheapest stretch in a row. The card names them in its day
+  row ("Cheapest 02:00–05:00"). Only known prices count, not the forecast. Off (0) until you set it.
+
+## 0.5.0
+
+- **Next 24 hours** and **Next 48 hours** now fill the hours after the known prices with Carnot's forecast from
+  Energi Data Service, in fainter bars, so the graph always reaches 24 or 48 hours ahead. Turn on the forecast
+  (Carnot) in the integration's options to get it; without it the graph ends where the prices end, as before.
+- The card's low and high still come from the known prices only.
+
 ## 0.4.0
 
 - **Period** can now show only the hours to come: the next 24 or the next 48 hours from the hour of now, without the

@@ -14,7 +14,10 @@ using tessera::Tone;
 namespace ui = tessera::ui;
 
 constexpr int MAX_DAY = 100;    // a day's slots, at most: 100 quarters on the day the clock goes back
-constexpr int MAX_SLOTS = 2 * MAX_DAY;  // today and tomorrow
+constexpr int MAX_SLOTS = 3 * MAX_DAY;  // today, tomorrow and, for the hours ahead, a day of Carnot's forecast
+constexpr int CHART_SLOTS = 2 * MAX_DAY;  // a graph draws at most this many bars: two days, or 48 hours ahead
+constexpr int MAX_FORECAST = 80;
+constexpr int MAX_CHEAP = 6;  // cheapest hours marked, at most  // forecast hours kept: 48 ahead, and today's hours the sensor may put first
 constexpr int MAX_CELLS = 60;  // as many as the meter's bar has
 constexpr int TILE_BARS = 100;  // a tile draws at most this many bars (memory); the card draws them all
 
@@ -33,7 +36,14 @@ struct Prices {
   char unit[16] = "";
   float lo = 0, hi = 0, avg = 0;  // of today
   int lo_slot = 0, hi_slot = 0;   // the slots of today they are in
-  int count() const { return today + tomorrow; }
+  // Carnot's forecast of the sensor (attribute `forecast`), an hour each, through the tariff only once it is placed
+  // after the known prices (place_forecast): `extra` slots after tomorrow's, 0 while the graph shows whole days.
+  float forecast[MAX_FORECAST] = {};
+  int forecast_n = 0;
+  uint32_t forecast_start = 0;  // when its first hour begins
+  int extra = 0;
+  int known() const { return today + tomorrow; }
+  int count() const { return today + tomorrow + extra; }
 };
 
 // A list of a day's prices into `out`, one slot each: 24 hours or 96 quarters, and 23/25 hours or 92/100 quarters on
@@ -90,6 +100,8 @@ struct Tariff {
   bool hourly = false; // show the average of each hour in place of its four quarters
   bool today_only = false;  // the graph holds today alone (24 hours), never tomorrow's prices
   int ahead = 0;            // the graph shows the hours from now on, this many (24 or 48); 0: whole days
+  int cheap = 0;            // how many of the cheapest hours to come the graph marks; 0: none
+  bool cheap_block = false; // those hours in one row (the cheapest stretch), else each on its own
   bool error = false;  // one of them is not a formula: the tile says so in place of a price that would be wrong
 };
 
@@ -103,11 +115,14 @@ static Tariff tariff_of(JsonObjectConst options) {
   const char *span = options["span"] | "two_days";
   t.today_only = strcmp(span, "today") == 0;
   t.ahead = strcmp(span, "next24") == 0 ? 24 : strcmp(span, "next48") == 0 ? 48 : 0;
+  t.cheap = std::clamp(static_cast<int>(std::lround(options["cheap"] | 0.0f)), 0, MAX_CHEAP);
+  t.cheap_block = strcmp(options["cheap_mode"] | "single", "block") == 0;
   return t;
 }
 
 static void read_prices(JsonObjectConst data, bool cents, const Tariff &tariff, Prices &p) {
-  p.today = p.tomorrow = 0;
+  p.today = p.tomorrow = p.extra = p.forecast_n = 0;
+  p.forecast_start = 0;
   p.has_current = p.has_feed = p.state_ok = false;
   p.chosen = !data["state"].isNull();
   if (!p.chosen || tariff.error) return;
@@ -136,6 +151,13 @@ static void read_prices(JsonObjectConst data, bool cents, const Tariff &tariff, 
     p.tomorrow = resolve(p.slot + p.today, read_day(a["tomorrow"], scale, p.slot + p.today), p.today >= 90);
   // Hour prices: each hour the average of its quarters. Both days are joined in place, then tomorrow's hours move up to
   // right after today's.
+  if (p.today && tariff.ahead > 0) {
+    for (JsonVariantConst v : a["outlook"].as<JsonArrayConst>()) {
+      if (p.forecast_n >= MAX_FORECAST) break;
+      p.forecast[p.forecast_n++] = v.is<float>() ? v.as<float>() * scale : NAN;
+    }
+    p.forecast_start = static_cast<uint32_t>(a["outlook_start"] | 0.0);
+  }
   if (tariff.hourly && p.today >= 90) {
     const int hours = resolve(p.slot, p.today, false);
     const int next = p.tomorrow ? resolve(p.slot + p.today, p.tomorrow, false) : 0;
@@ -204,20 +226,25 @@ static uint32_t midnight_of(uint32_t epoch) {
 
 // When each slot is: today's from its midnight, tomorrow's from the next, each as long as its day divided by its
 // slots (an hour or a quarter, also on the days of 23 and 25 hours).
+// After the known prices, the forecast's slots run on from `third`, the end of the last known day.
 struct Day {
   uint32_t start = 0, next = 0;  // today's midnight and tomorrow's; 0 while the clock is not set
   uint32_t step = 3600, next_step = 3600;
-  int today = 0;
+  uint32_t third = 0, third_step = 3600;  // where the known prices end, and the forecast's slot length
+  int today = 0, tomorrow = 0;
   bool known() const { return start != 0; }
   // When slot s begins; at(count()) is when the last one ends.
   uint32_t at(int s) const {
-    return s < today ? start + static_cast<uint32_t>(s) * step : next + static_cast<uint32_t>(s - today) * next_step;
+    if (s < today) return start + static_cast<uint32_t>(s) * step;
+    if (s < today + tomorrow) return next + static_cast<uint32_t>(s - today) * next_step;
+    return third + static_cast<uint32_t>(s - today - tomorrow) * third_step;
   }
   // The slot of the moment `epoch`, -1 while the clock is not set.
   int slot(uint32_t epoch) const {
     if (!known() || !today) return -1;
     if (epoch < next) return static_cast<int>((epoch - start) / step);
-    return today + static_cast<int>((epoch - next) / next_step);
+    if (tomorrow && epoch < third) return today + static_cast<int>((epoch - next) / next_step);
+    return today + tomorrow + static_cast<int>((epoch - third) / third_step);
   }
 };
 
@@ -246,8 +273,97 @@ static Day day_of(const Prices &p, uint32_t epoch) {
   d.start = midnight_of(epoch);
   d.next = midnight_of(d.start + 26 * 3600);
   d.step = (d.next - d.start) / p.today;
-  d.next_step = p.tomorrow ? (midnight_of(d.next + 26 * 3600) - d.next) / p.tomorrow : d.step;
+  d.tomorrow = p.tomorrow;
+  d.third = p.tomorrow ? midnight_of(d.next + 26 * 3600) : d.next;
+  d.next_step = p.tomorrow ? (d.third - d.next) / p.tomorrow : d.step;
+  d.third_step = p.today >= 90 ? 900 : 3600;
   return d;
+}
+
+// Carnot's forecast after the known prices, for a graph of the hours ahead: each hour once, or as four quarters when
+// the prices are in quarters. Energi Data Service starts it where its prices end (tomorrow, or the day after once
+// tomorrow's are in), but on the last day of a month it also keeps today's hours: those are skipped, and what follows
+// them starts after the known prices. Without a forecast, or for whole days, there is nothing after tomorrow.
+static void place_forecast(Prices &p, const Day &d, const Tariff &tariff, bool cents) {
+  p.extra = 0;
+  if (tariff.ahead <= 0 || !d.known() || !p.today || !p.forecast_n || !p.forecast_start) return;
+  const float shown = cents ? 100.0f : 1.0f;
+  const int per = d.third_step == 900 ? 4 : 1;
+  uint32_t from = p.forecast_start;
+  int i = 0;
+  if (from < d.third) {
+    i = static_cast<int>(((from < d.next ? d.next : d.third) - from + 3599) / 3600);
+    from = d.third;
+  }
+  int s = p.known();
+  for (uint32_t at = d.third; at < from && s < MAX_SLOTS; at += d.third_step, s++) p.slot[s] = p.feed[s] = NAN;
+  for (; i < p.forecast_n && s + per <= MAX_SLOTS; i++) {
+    const float kwh = p.forecast[i];
+    const float v = std::isnan(kwh) ? NAN : tariff.delivery(kwh) * shown;
+    const float f = std::isnan(kwh) ? NAN : tariff.feed_in(kwh) * shown;
+    for (int q = 0; q < per; q++, s++) {
+      p.slot[s] = v;
+      p.feed[s] = f;
+    }
+  }
+  p.extra = s - p.known();
+}
+
+// The cheapest hours to come: whole clock hours from the hour of now up to `end` (a slot), of known prices only, each
+// hour the average of its slots. Either the `want` cheapest each on its own, in the order of the clock, or the
+// cheapest stretch of `want` hours in a row. `start` holds the first slot of each, `per` the slots of an hour.
+struct Cheap {
+  int start[MAX_CHEAP] = {};
+  int n = 0, per = 1;
+};
+
+static Cheap cheapest(const Prices &p, const Day &d, uint32_t epoch, int end, int want, bool block) {
+  Cheap c;
+  c.per = p.today >= 90 ? 4 : 1;
+  const int now = d.slot(epoch);
+  end = std::min(end, p.known());
+  if (want <= 0 || now < 0 || now >= end) return c;
+  const int from = now - now % c.per;  // a day has whole hours of slots, so an hour starts at a multiple of `per`
+  const int hours = (end - from) / c.per;
+  float avg[3 * 25];
+  const int n = std::min(hours, 3 * 25);
+  for (int h = 0; h < n; h++) {
+    float sum = 0;
+    avg[h] = 0;
+    for (int q = 0; q < c.per; q++) {
+      const float v = p.slot[from + h * c.per + q];
+      if (std::isnan(v)) { avg[h] = NAN; break; }
+      sum += v;
+    }
+    if (!std::isnan(avg[h])) avg[h] = sum / c.per;
+  }
+  if (block) {
+    int best = -1;
+    float least = INFINITY;
+    for (int h = 0; h + want <= n; h++) {
+      float sum = 0;
+      bool whole = true;
+      for (int k = h; k < h + want && whole; k++) {
+        if (std::isnan(avg[k])) whole = false;
+        else sum += avg[k];
+      }
+      if (whole && sum < least) { least = sum; best = h; }
+    }
+    if (best < 0) return c;
+    for (int k = 0; k < want; k++) c.start[c.n++] = from + (best + k) * c.per;
+    return c;
+  }
+  bool taken[3 * 25] = {};
+  for (int k = 0; k < want; k++) {
+    int best = -1;
+    for (int h = 0; h < n; h++)
+      if (!taken[h] && !std::isnan(avg[h]) && (best < 0 || avg[h] < avg[best])) best = h;
+    if (best < 0) break;
+    taken[best] = true;
+  }
+  for (int h = 0; h < n && c.n < MAX_CHEAP; h++)
+    if (taken[h]) c.start[c.n++] = from + h * c.per;
+  return c;
 }
 
 // ---- The graph, in the look of Tessera's history graph: price labels on the left, hairlines across, the bars, and
@@ -274,7 +390,7 @@ class Chart {
     grid_style_ = grid;
     line_ = line;
     fill_ = fill;
-    bars_n_ = std::min(bars, MAX_SLOTS);
+    bars_n_ = std::min(bars, CHART_SLOTS);
     times_n_ = std::min(times, MAX_TIMES);
     const bool big = ui::large();
     label_h_ = ui::line_height(Font::BODY);
@@ -302,6 +418,11 @@ class Chart {
       lv_obj_add_flag(price_[i], LV_OBJ_FLAG_HIDDEN);
     }
     divider_ = hairline(parent, theme::TICK);
+    for (int i = 0; i < MAX_CHEAP; i++) {
+      cheap_mark_[i] = hairline(parent, theme::INK);
+      lv_obj_set_style_radius(cheap_mark_[i], ui::px(1), 0);
+      lv_obj_add_flag(cheap_mark_[i], LV_OBJ_FLAG_HIDDEN);
+    }
     for (int i = 0; i < bars_n_; i++) {
       bars_[i] = ui::block(parent, theme::TRACK);
       lv_obj_set_style_radius(bars_[i], line_ ? 0 : ui::px(1), 0);
@@ -349,6 +470,13 @@ class Chart {
   void select(int i) { sel_ = i; }
   // How many hours from now the graph shows (0: every slot of the list); `end()` is one past its last slot.
   void set_ahead(int hours) { ahead_ = hours; }
+  // How many of the cheapest hours to come it marks (0: none), and whether in one row.
+  void set_cheap(int hours, bool block) {
+    cheap_want_ = hours;
+    cheap_block_ = block;
+  }
+  // The cheapest hours it marked at its last update.
+  const Cheap &cheap() const { return cheap_; }
   int end() const { return end_; }
 
   // The past is grey, the bar of now the accent, the bars to come green, amber or red by their place in the range of
@@ -377,7 +505,7 @@ class Chart {
     const int now = at_now < 0 ? -1 : at_now - first;
     const int group = n > bars_n_ ? (n + bars_n_ - 1) / bars_n_ : 1;
     const int bars = n ? (n + group - 1) / group : 0;
-    float v[MAX_SLOTS];
+    float v[CHART_SLOTS];
     float lo = 0, hi = 0, mn = INFINITY, mx = -INFINITY;
     for (int b = 0; b < bars; b++) {
       float sum = 0;
@@ -421,6 +549,8 @@ class Chart {
         lv_obj_add_flag(time_[i], LV_OBJ_FLAG_HIDDEN);
       }
       lv_obj_add_flag(divider_, LV_OBJ_FLAG_HIDDEN);
+      for (int i = 0; i < MAX_CHEAP; i++) lv_obj_add_flag(cheap_mark_[i], LV_OBJ_FLAG_HIDDEN);
+      cheap_ = Cheap{};
       hide_line(0);
       return;
     }
@@ -505,9 +635,36 @@ class Chart {
         ui::set_fill(bar, at < 0.34f ? Tone::GOOD : at < 0.67f ? Tone::BUSY : Tone::ALERT, theme::TRACK);
       }
       // Under a stepped line the bars are its fill: faint, the past a little less so as its grey is light already.
-      if (line_) lv_obj_set_style_bg_opa(bar, i < now_bar ? LV_OPA_50 : LV_OPA_20, 0);
+      // Carnot's forecast, after the known prices, is a guess: its bars are fainter than the prices before them.
+      const bool guess = first + i * group >= p.known();
+      if (line_) {
+        lv_obj_set_style_bg_opa(bar, i < now_bar ? LV_OPA_50 : guess ? LV_OPA_10 : LV_OPA_20, 0);
+      } else {
+        lv_obj_set_style_bg_opa(bar, guess ? LV_OPA_40 : LV_OPA_COVER, 0);
+      }
     }
     if (line_) draw_line(p, bars, v, mn, mx, now_bar, edge_x, y_of);
+
+    // The cheapest hours to come: a short dark stroke over each hour's bars, so hours in a row make one line.
+    cheap_ = cheapest(p, d, epoch, stop, cheap_want_, cheap_block_);
+    const int mark_h = std::max(2, ui::px(ui::large() ? 4 : 3)), lift = ui::px(ui::large() ? 4 : 3);
+    for (int k = 0; k < MAX_CHEAP; k++) {
+      lv_obj_t *mark = cheap_mark_[k];
+      const int r = k < cheap_.n ? cheap_.start[k] - first : -1;
+      if (r < 0 || r >= n) {
+        lv_obj_add_flag(mark, LV_OBJ_FLAG_HIDDEN);
+        continue;
+      }
+      const int b0 = r / group, b1 = std::min(bars - 1, (r + cheap_.per - 1) / group);
+      int top_y = ay_ + ah_;
+      for (int b = b0; b <= b1; b++)
+        if (!std::isnan(v[b])) top_y = std::min(top_y, y_of(std::max(v[b], base_[b])));
+      const int x0 = ax_ + edge_x(b0), x1 = ax_ + edge_x(b1 + 1) - (cheap_block_ ? 0 : gap);
+      lv_obj_clear_flag(mark, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_set_size(mark, std::max(2, x1 - x0), mark_h);
+      lv_obj_set_pos(mark, x0, std::max(ay_ - mark_h, top_y - lift - mark_h));
+      ui::set_fill(mark, Tone::NORMAL, theme::INK);
+    }
 
     // The line between the days.
     if (p.tomorrow > 0 && p.today > first && p.today < stop) {
@@ -674,7 +831,7 @@ class Chart {
     return line;
   }
 
-  lv_obj_t *bars_[MAX_SLOTS]{}, *grid_[MAX_TICKS]{}, *price_[MAX_TICKS]{}, *marks_[MAX_TIMES]{}, *time_[MAX_TIMES]{};
+  lv_obj_t *bars_[CHART_SLOTS]{}, *grid_[MAX_TICKS]{}, *price_[MAX_TICKS]{}, *marks_[MAX_TIMES]{}, *time_[MAX_TIMES]{};
   lv_obj_t *divider_{};
   // The stepped line: its runs, the feed-in line, the mark through a tapped slot and the dots, and their points.
   lv_obj_t *runs_[MAX_RUNS]{}, *feed_line_{}, *mark_{}, *now_dot_{}, *sel_dot_{}, *feed_dot_{};
@@ -687,7 +844,11 @@ class Chart {
   int bars_n_ = 0, times_n_ = 0, mid_x_ = 0;
   int group_ = 1, bars_now_ = 0, sel_ = -1;
   int first_ = 0, end_ = 0, ahead_ = 0;  // the window of slots the graph shows; ahead_ in hours, 0 for all
-  float value_[MAX_SLOTS]{}, base_[MAX_SLOTS]{};  // each bar's delivery price, and the price it stands on
+  int cheap_want_ = 0;                    // the cheapest hours to mark, and whether in one row
+  bool cheap_block_ = false;
+  Cheap cheap_;
+  lv_obj_t *cheap_mark_[MAX_CHEAP]{};
+  float value_[CHART_SLOTS]{}, base_[CHART_SLOTS]{};  // each bar's delivery price, and the price it stands on
 };
 
 // What a card takes over from the tile that opened it: the tile's options and its last prices.
@@ -742,6 +903,7 @@ class PriceTile : public tessera::Tile {
     if (chart_on_) {
       chart_.create(c.parent, 0, head_ + gap, width_, height_ - head_ - gap, TILE_BARS, 12, cents_, line_, fill_, grid_);
       chart_.set_ahead(tariff_.ahead);
+      chart_.set_cheap(tariff_.cheap, tariff_.cheap_block);
       return;
     }
     // The meter's bar of cells (Tessera's sensor meter): narrow cells along the bottom of the tile, lit up to where
@@ -773,6 +935,7 @@ class PriceTile : public tessera::Tile {
   }
 
   void on_tick(uint32_t epoch) override {
+    place_forecast(prices_, day_of(prices_, epoch), tariff_, cents_);
     price_now(prices_, epoch);
     std::string big, small;
     if (!prices_.chosen) {
@@ -998,9 +1161,15 @@ class PriceCard : public tessera::Card {
     lv_obj_set_size(tomorrow_, width_ / 2, days_h);
     lv_obj_set_pos(today_, edge, top);
     const int plot_y = top + days_h + ui::px(big ? 8 : 4);
-    chart_.create(c.parent, edge, plot_y, width_ - 2 * edge, y + card_h - ui::px(big ? 10 : 6) - plot_y, MAX_SLOTS, MAX_TIMES,
+    chart_.create(c.parent, edge, plot_y, width_ - 2 * edge, y + card_h - ui::px(big ? 10 : 6) - plot_y, CHART_SLOTS, MAX_TIMES,
                   cents_, shared_->line, shared_->fill, shared_->grid);
     chart_.set_ahead(tariff_.ahead);
+    chart_.set_cheap(tariff_.cheap, tariff_.cheap_block);
+    cheap_ = ui::label(c.parent, Font::BODY, theme::INK);
+    lv_obj_set_style_text_align(cheap_, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_set_size(cheap_, 1, days_h);
+    lv_obj_set_pos(cheap_, edge, top);
+    edge_ = edge;
     on_tick(0);
   }
 
@@ -1011,6 +1180,7 @@ class PriceCard : public tessera::Card {
 
   void on_tick(uint32_t epoch) override {
     last_epoch_ = epoch;
+    place_forecast(prices_, day_of(prices_, epoch), tariff_, cents_);
     price_now(prices_, epoch);
     const bool ok = prices_.chosen && prices_.has_current;
     const int gap = ui::px(8);
@@ -1075,6 +1245,34 @@ class PriceCard : public tessera::Card {
       lv_obj_set_pos(tomorrow_, tx, lv_obj_get_y(today_));
       lv_obj_set_width(tomorrow_, std::max(1, width_ - tx));
     }
+    show_cheap(graph, second, day);
+  }
+
+  // The cheapest hours in the day row, at its right end: "Cheapest 02:00 · 03:00 · 13:00", or "Cheapest 02:00–05:00"
+  // for hours in a row; nothing where it would run into the day labels.
+  void show_cheap(bool graph, bool second, const Day &day) {
+    const Cheap &c = chart_.cheap();
+    std::string words;
+    if (graph && day.known() && c.n > 0) {
+      const std::string dash = ui::covers("\u2013", Font::BODY) ? "\u2013" : "-";
+      std::string list;
+      if (tariff_.cheap_block) {
+        list = tessera::clock_text(day.at(c.start[0])) + dash + tessera::clock_text(day.at(c.start[c.n - 1] + c.per));
+      } else {
+        for (int k = 0; k < c.n; k++) list += (k ? " \u00b7 " : "") + tessera::clock_text(day.at(c.start[k]));
+      }
+      words = tessera::fill(plugin_->text("cheap"), "value", list);
+    }
+    const int y = lv_obj_get_y(today_);
+    const int left = second ? lv_obj_get_x(tomorrow_) + ui::text_width(plugin_->text("tomorrow"), Font::BODY)
+                            : edge_ + ui::text_width(plugin_->text(graph ? "today" : "no_graph"), Font::BODY);
+    const int room = width_ - edge_ - left - ui::px(8);
+    const int w = words.empty() ? 0 : ui::text_width(words, Font::BODY);
+    if (w == 0 || w > room) words.clear();
+    ui::set_text(cheap_, words);
+    ui::set_color(cheap_, theme::INK);
+    lv_obj_set_size(cheap_, std::max(1, w + 2), ui::line_height(Font::BODY));
+    lv_obj_set_pos(cheap_, width_ - edge_ - w - 2, y);
   }
 
   // A tap on a bar shows it; a tap on the one shown, or elsewhere, puts the card back.
@@ -1120,7 +1318,8 @@ class PriceCard : public tessera::Card {
   bool extreme(bool high, int now, float &value, int &slot) const {
     bool found = false;
     // With a window of hours ahead, only the slots the graph shows.
-    const int end = tariff_.ahead > 0 && chart_.end() > 0 ? std::min(prices_.count(), chart_.end()) : prices_.count();
+    // Only known prices: the forecast is a guess, and its slots are not today's or tomorrow's.
+    const int end = tariff_.ahead > 0 && chart_.end() > 0 ? std::min(prices_.known(), chart_.end()) : prices_.known();
     for (int s = std::max(now, 0); s < end; s++) {
       const float v = prices_.slot[s];
       if (std::isnan(v) || (found && (high ? v <= value : v >= value))) continue;
@@ -1160,6 +1359,8 @@ class PriceCard : public tessera::Card {
   int decimals_ = 2, width_ = 0, height_ = 0, head_ = 0, row_h_ = 0, left_w_ = 0, right_x_ = 0;
   uint32_t last_epoch_ = 0;
   lv_obj_t *value_{}, *unit_{}, *feed_{}, *avg_cap_{}, *avg_{}, *extreme_[2]{}, *today_{}, *tomorrow_{}, *surface_{};
+  lv_obj_t *cheap_{};
+  int edge_ = 0;
 };
 
 void EnergidataPrice::setup() {
