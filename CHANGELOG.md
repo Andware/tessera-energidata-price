@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.1
+
+- A tile takes about half the layout memory it did (8000 in place of 16000), so more tiles fit on a screen. The
+  graph and the meter's cells are each drawn in one part instead of one part per bar and per cell; they look and
+  take taps as before. Nothing to do.
+- What the top bar and the card keep of a tile's prices now lies in the screen's large memory (PSRAM) where it has
+  one, not in the memory Wi-Fi shares.
+
 ## 0.6.0
 
 - New options **Cheapest hours** (0 to 6) and **Cheapest hours as**: the graph marks the cheapest hours to come with
